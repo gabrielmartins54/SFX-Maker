@@ -6,6 +6,7 @@ use kurbo::{Affine, BezPath};
 use ttf_parser::{Face, OutlineBuilder};
 
 use crate::model::letter::Letter;
+use crate::model::params::Params;
 use crate::model::scene::LayoutDirection;
 
 /// Nominal em size in scene units. Everything is laid out at this size and
@@ -83,11 +84,34 @@ impl OutlineBuilder for PathSink {
 
 /// Lays out `text`. Whitespace advances the pen but produces no `Letter`.
 /// `\n` starts a new line (horizontal) or column (vertical).
-/// Kerning is not applied yet (planned: optical spacing, M4).
+/// Kerning uses the legacy `kern` table only (no GPOS).
+#[cfg(test)]
 pub fn text_to_paths(
     font: &FontData,
     text: &str,
     direction: LayoutDirection,
+) -> Result<Vec<Letter>, FontError> {
+    text_to_paths_with(font, text, direction, &Params::default())
+}
+
+/// Horizontal kerning (scene units) between two glyphs from the legacy `kern` table.
+fn kern_pair(face: &Face, left: ttf_parser::GlyphId, right: ttf_parser::GlyphId, scale: f64) -> f64 {
+    let Some(kern) = face.tables().kern else {
+        return 0.0;
+    };
+    kern.subtables
+        .into_iter()
+        .filter(|s| s.horizontal && !s.variable && !s.has_cross_stream)
+        .find_map(|s| s.glyphs_kerning(left, right))
+        .map_or(0.0, |k| f64::from(k) * scale)
+}
+
+/// Like [`text_to_paths`] but honours tracking, line spacing and kerning from `params`.
+pub fn text_to_paths_with(
+    font: &FontData,
+    text: &str,
+    direction: LayoutDirection,
+    params: &Params,
 ) -> Result<Vec<Letter>, FontError> {
     let face = Face::parse(&font.bytes, font.index).map_err(|e| FontError::Parse(e.to_string()))?;
     let upem = f64::from(face.units_per_em());
@@ -97,22 +121,26 @@ pub fn text_to_paths(
     let scale = EM_SIZE / upem;
     let ascender = f64::from(face.ascender()) * scale;
     let descender = f64::from(face.descender()) * scale;
-    let line_height = (ascender - descender).max(EM_SIZE * 0.5);
+    let glyph_height = (ascender - descender).max(EM_SIZE * 0.5);
+    let line_height = glyph_height * params.line_spacing;
 
+    let tracking = params.tracking * EM_SIZE;
     let mut letters = Vec::new();
     let (mut pen_x, mut pen_y) = (0.0_f64, 0.0_f64);
     let mut line = 0.0_f64;
+    let mut prev: Option<ttf_parser::GlyphId> = None;
 
     for ch in text.chars() {
         if ch == '\n' {
             line += 1.0;
+            prev = None;
             match direction {
                 LayoutDirection::Horizontal => {
                     pen_x = 0.0;
                     pen_y = line * line_height;
                 }
                 LayoutDirection::Vertical => {
-                    pen_x = -line * EM_SIZE * 1.1;
+                    pen_x = -line * EM_SIZE * 1.1 * params.line_spacing;
                     pen_y = 0.0;
                 }
             }
@@ -120,6 +148,13 @@ pub fn text_to_paths(
         }
 
         let glyph = face.glyph_index(ch);
+        if params.kerning
+            && direction == LayoutDirection::Horizontal
+            && let (Some(p), Some(g)) = (prev, glyph)
+        {
+            pen_x += kern_pair(&face, p, g, scale);
+        }
+        prev = glyph;
         let advance = glyph
             .and_then(|g| face.glyph_hor_advance(g))
             .map_or(EM_SIZE * 0.5, |a| f64::from(a) * scale);
@@ -144,8 +179,8 @@ pub fn text_to_paths(
         }
 
         match direction {
-            LayoutDirection::Horizontal => pen_x += advance,
-            LayoutDirection::Vertical => pen_y += line_height,
+            LayoutDirection::Horizontal => pen_x += advance + tracking,
+            LayoutDirection::Vertical => pen_y += glyph_height + tracking,
         }
     }
     Ok(letters)

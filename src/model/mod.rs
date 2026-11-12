@@ -1,3 +1,5 @@
+pub mod dictionary;
 pub mod letter;
-// params.rs and preset.rs arrive in M4 / M7.
+pub mod params;
+pub mod preset;
 pub mod scene;

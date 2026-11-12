@@ -7,7 +7,6 @@ use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Transform};
 use crate::model::scene::Scene;
 
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)] // `Transparent` is used by PNG export (M3)
 pub enum Background {
     Transparent,
     Solid([u8; 4]),
@@ -71,7 +70,7 @@ pub fn render_scene(
     paint.anti_alias = true;
 
     for letter in &scene.letters {
-        if let Some(path) = to_skia_path(&letter.glyph_path) {
+        if let Some(path) = to_skia_path(&letter.local_path()) {
             let t = to_skia_transform(view * letter.transform);
             pixmap.fill_path(&path, &paint, FillRule::Winding, t, None);
         }
